@@ -1,0 +1,43 @@
+name: view-snippet-files
+on: workflow_dispatch
+jobs:
+  show:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone official source
+        run: |
+          git clone --depth 1 --branch v0.6.7 https://github.com/wasi-master/wmkeyboard /tmp/wm \
+          || git clone --depth 1 --branch 0.6.7 https://github.com/wasi-master/wmkeyboard /tmp/wm \
+          || { git clone https://github.com/wasi-master/wmkeyboard /tmp/wm && git -C /tmp/wm checkout 949eb06be; }
+          git -C /tmp/wm log --oneline -1
+
+      - name: Snippet class
+        run: |
+          cd /tmp/wm
+          F=$(grep -rlE "data class Snippet\(" --include=*.kt . | grep "src/main" | head -1)
+          echo "FILE: $F"
+          sed -n '1,12p' "$F"
+          grep -nE "data class Snippet\(" -A 45 "$F" | head -70
+
+      - name: Bulk edit class
+        run: |
+          cd /tmp/wm
+          B=$(find . -name SnippetBulkEdit.kt -path "*src/main*" | head -1)
+          echo "FILE: $B"
+          grep -vE "^\s*(//|\*|/\*)" "$B" | head -90
+
+      - name: Store head
+        run: |
+          cd /tmp/wm
+          S=$(find . -name SnippetStore.kt -path "*src/main*" | head -1)
+          echo "FILE: $S"
+          sed -n '1,45p' "$S"
+          grep -nE "fun normalize|val snippets|fun mutate|fun items|fun replaceAll" "$S"
+
+      - name: Screens head
+        run: |
+          cd /tmp/wm
+          P=$(find . -name SnippetScreens.kt -path "*src/main*" | head -1)
+          echo "FILE: $P"
+          grep -nE "^package|^import" "$P" | head -70
+          grep -nE "val snippets|val store|fun mutate|val undoLabel" "$P" | head
