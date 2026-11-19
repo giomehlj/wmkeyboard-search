@@ -497,8 +497,8 @@ jobs:
           print('OK: switch added to', ap)
           PY
           git diff --stat
-          - uses: actions/checkout@v7
-           with:
+      - uses: actions/checkout@v7
+        with:
           path: wm-words
       - name: Make instant switch skip real-word triggers
         run: |
@@ -601,7 +601,7 @@ jobs:
           W = 'com.wasimaster.wmkeyboard.core.snippets.WmRealWords'
           setup = r'''val wmCtx = androidx.compose.ui.platform.LocalContext.current
                   val wmWordsState = remember { mutableStateOf(WMW.isLoaded()) }
-                  LaunchedEffect(Unit) {
+                  androidx.compose.runtime.LaunchedEffect(Unit) {
                       if (!wmWordsState.value) {
                           try {
                               kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
