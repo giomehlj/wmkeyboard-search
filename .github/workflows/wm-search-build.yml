@@ -77,6 +77,85 @@ jobs:
           sed -i 's/private const val MAX_SNIPPETS = 500/private const val MAX_SNIPPETS = 5_000/' "$csv" "$file"
           sed -i 's/private const val MAX_ROWS = 5_000/private const val MAX_ROWS = 50_000/' "$csv"
           grep -n 'MAX_SNIPPETS =\|MAX_ROWS =' "$csv" "$file"
+      - name: Make snippet store save in a stream (big lists)
+        run: |
+          python3 - <<'PY'
+          import glob, sys
+          paths = [p for p in glob.glob('**/SnippetStore.kt', recursive=True) if '/src/main/' in p]
+          if len(paths) != 1:
+              sys.exit('ERROR: SnippetStore.kt found %d times' % len(paths))
+          path = paths[0]
+          s = open(path, encoding='utf-8').read()
+
+          def swap(s, old, new, what):
+              n = s.count(old)
+              if n != 1:
+                  sys.exit('ERROR: %s found %d times' % (what, n))
+              return s.replace(old, new)
+
+          s = swap(s,
+              'import kotlinx.serialization.json.Json\n',
+              'import kotlinx.serialization.json.Json\n'
+              'import kotlinx.serialization.json.decodeFromStream\n'
+              'import kotlinx.serialization.json.encodeToStream\n',
+              'json import')
+
+          s = swap(s,
+              '    @Synchronized\n'
+              '    fun save() {\n'
+              '        val file = storageFile ?: return\n'
+              '        runCatching {\n'
+              '            file.parentFile?.mkdirs()\n'
+              '            file.writeText(json.encodeToString(Snapshot(snippets.toList(), folders.toList())))\n'
+              '        }\n'
+              '        pruneImages()\n'
+              '    }\n',
+              '    @OptIn(ExperimentalSerializationApi::class)\n'
+              '    @Synchronized\n'
+              '    fun save() {\n'
+              '        val file = storageFile ?: return\n'
+              '        runCatching {\n'
+              '            file.parentFile?.mkdirs()\n'
+              '            val tmp = File(file.parentFile, file.name + ".tmp")\n'
+              '            tmp.outputStream().buffered().use { out ->\n'
+              '                json.encodeToStream(Snapshot.serializer(), Snapshot(snippets.toList(), folders.toList()), out)\n'
+              '            }\n'
+              '            if (!tmp.renameTo(file)) throw java.io.IOException("rename failed")\n'
+              '        }.onFailure { android.util.Log.e("WMSnippetStore", "save failed", it) }\n'
+              '        pruneImages()\n'
+              '    }\n',
+              'save function')
+
+          s = swap(s,
+              '    @Synchronized\n    fun reload() {\n',
+              '    @OptIn(ExperimentalSerializationApi::class)\n    @Synchronized\n    fun reload() {\n',
+              'reload header')
+
+          s = swap(s,
+              'val snapshot = json.decodeFromString<Snapshot>(file.readText())',
+              'val snapshot = file.inputStream().buffered().use { json.decodeFromStream<Snapshot>(it) }',
+              'reload read line')
+
+          open(path, 'w', encoding='utf-8').write(s)
+          print('OK: streaming save and load added to', path)
+          PY
+          git diff --stat
+      - name: Ask Android for a large heap
+        run: |
+          found=0
+          for m in $(find . -name AndroidManifest.xml -path '*src/main*' -not -path '*/build/*'); do
+            if grep -q '<application' "$m"; then
+              found=1
+              if grep -q 'largeHeap' "$m"; then
+                echo "already set: $m"
+              else
+                sed -i '0,/<application/s//<application android:largeHeap="true"/' "$m"
+                echo "patched: $m"
+              fi
+            fi
+          done
+          if [ "$found" = "0" ]; then echo "ERROR: no manifest with application tag"; exit 1; fi
+          grep -rn 'largeHeap' --include=AndroidManifest.xml . | grep -v '/build/' || { echo "ERROR: largeHeap not set"; exit 1; }
       - name: Add snippet search box
         run: |
           python3 - <<'PY'
