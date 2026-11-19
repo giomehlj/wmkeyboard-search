@@ -1,0 +1,42 @@
+name: WM Find Instant 3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  find:
+    name: Show bulk edit code
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: wasi-master/wmkeyboard
+          ref: v0.6.7
+
+      - name: Show code
+        run: |
+          set +e
+          d=core/content/src/main/java/com/wasimaster/wmkeyboard/core/snippets
+          a=app/src/main/java/com/wasimaster/wmkeyboard/app/SnippetScreens.kt
+          echo "=== 1: SnippetBulkEdit.kt ==="
+          cat $d/SnippetBulkEdit.kt
+          echo
+          echo "=== 2: Snippet class ==="
+          sed -n '100,175p' $d/SnippetStore.kt
+          echo
+          echo "=== 3: store functions ==="
+          grep -nE '^\s*(@Synchronized )?(internal |private )?fun ' $d/SnippetStore.kt | cut -c1-200 | head -n 70
+          echo
+          echo "=== 4: bulk use in screens ==="
+          grep -nE 'BulkEdit|applyBulk|bulkEdit|bulkApply' $a | cut -c1-250
+          echo
+          echo "=== 5: bulk screen part ==="
+          sed -n '1525,1560p' $a
+          echo
+          echo "=== 6: main screen start ==="
+          grep -nE '^(private |internal )?fun [A-Z]' $a | cut -c1-200
+          echo
+          echo "=== 7: pencil anchor ==="
+          n=$(grep -n 'The pencil is the one way into every destructive' $a | head -n1 | cut -d: -f1)
+          sed -n "$((n-40)),$((n+12))p" $a
