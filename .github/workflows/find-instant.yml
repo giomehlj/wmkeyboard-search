@@ -1,0 +1,28 @@
+name: WM Find Instant
+
+on:
+  workflow_dispatch:
+
+jobs:
+  find:
+    name: Find instant expansion code
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: wasi-master/wmkeyboard
+          ref: v0.6.7
+
+      - name: Show instant expansion code
+        run: |
+          echo "=== 1: Kotlin lines with instant ==="
+          grep -rniE 'instant' --include=*.kt . | grep -v '/build/' | grep -viE 'java\.time|kotlinx\.datetime|Instant\.now|Instant\.parse|import ' | head -n 60
+          echo
+          echo "=== 2: Persian/English text of the setting ==="
+          grep -rniE 'instant' --include=strings*.xml app/src/main/res/values | head -n 20
+          echo
+          echo "=== 3: Snippet data class ==="
+          f=$(find . -name Snippet.kt -path '*main*' | head -n1)
+          echo "$f"
+          sed -n '1,80p' "$f"
