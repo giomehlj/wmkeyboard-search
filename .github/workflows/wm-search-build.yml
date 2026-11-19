@@ -411,6 +411,92 @@ jobs:
               f.write(src[:start] + body + src[end:])
           print('OK: pages and sort added to', path)
           PY
+      - name: Add instant expansion switch for all snippets
+        run: |
+          python3 - <<'PY'
+          import glob, sys
+
+          def one(name):
+              paths = [p for p in glob.glob('**/' + name, recursive=True) if '/src/main/' in p]
+              if len(paths) != 1:
+                  sys.exit('ERROR: %s found %d times' % (name, len(paths)))
+              return paths[0]
+
+          def swap(s, old, new, what):
+              n = s.count(old)
+              if n != 1:
+                  sys.exit('ERROR: %s found %d times' % (what, n))
+              return s.replace(old, new)
+
+          # ---- SnippetStore.kt: edit every snippet at once ----
+          sp = one('SnippetStore.kt')
+          s = open(sp, encoding='utf-8').read()
+          if 'wmEditAll' in s:
+              sys.exit('ERROR: wmEditAll already present')
+          fn = '''    /** Writes [edit] into every snippet at once and says how many changed. */
+              @Synchronized
+              fun wmEditAll(edit: SnippetBulkEdit): Int {
+                  if (edit.isEmpty) return 0
+                  var changed = 0
+                  for (i in snippets.indices) {
+                      val snippet = snippets[i]
+                      val next = edit.applyTo(snippet)
+                      if (next == snippet) continue
+                      snippets[i] = normalize(next, id = snippet.id, createdAt = snippet.createdAt)
+                      changed++
+                  }
+                  if (changed > 0) lookup = null
+                  return changed
+              }
+
+          '''
+          anchor = '    /**\n     * Replaces the whole list with [items], exactly as given.'
+          s = swap(s, anchor, fn + anchor, 'replaceAll anchor')
+          open(sp, 'w', encoding='utf-8').write(s)
+          print('OK: wmEditAll added to', sp)
+
+          # ---- SnippetScreens.kt: the switch on the main snippet page ----
+          ap = one('SnippetScreens.kt')
+          a = open(ap, encoding='utf-8').read()
+          if 'wmAllImmediate' in a:
+              sys.exit('ERROR: wmAllImmediate already present')
+          block = '''val wmAllImmediate = remember(snippets) {
+              snippets.isNotEmpty() && snippets.all {
+                  it.immediate || it.confirm || !it.triggerPattern.isNullOrBlank() || it.trigger.isNullOrBlank()
+              }
+          }
+          Row(
+              modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+          ) {
+              Text("گسترش فوری برای همه اسنیپت‌ها", modifier = Modifier.weight(1f))
+              androidx.compose.material3.Switch(
+                  checked = wmAllImmediate,
+                  enabled = store != null,
+                  onCheckedChange = { wmOn ->
+                      val wmBefore = store?.items()
+                      if (wmBefore != null) {
+                          mutate { it.wmEditAll(SnippetBulkEdit(immediate = wmOn)) }
+                          snackbar?.undo(
+                              message = if (wmOn) "گسترش فوری برای همه روشن شد" else "گسترش فوری برای همه خاموش شد",
+                              undoLabel = undoLabel,
+                          ) {
+                              mutate { it.replaceAll(wmBefore) }
+                          }
+                      }
+                  },
+              )
+          }
+          Spacer(Modifier.height(12.dp))
+          '''
+          indented = ''.join(('    ' + l if l.strip() else l) for l in block.splitlines(True))
+          anchor2 = '    RegisterAddFab(stringResource(R.string.expander_add_action)) { onNavigate("expander/edit/0") }\n'
+          a = swap(a, anchor2, indented + anchor2, 'add fab anchor')
+          open(ap, 'w', encoding='utf-8').write(a)
+          print('OK: switch added to', ap)
+          PY
+          git diff --stat
       - name: Assemble
         run: ./gradlew assembleIntlDebug --stacktrace
 
