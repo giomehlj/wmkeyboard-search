@@ -74,8 +74,8 @@ jobs:
           grep -q 'private const val MAX_SNIPPETS = 500' "$csv" || { echo "ERROR: csv cap"; exit 1; }
           grep -q 'private const val MAX_SNIPPETS = 500' "$file" || { echo "ERROR: file cap"; exit 1; }
           grep -q 'private const val MAX_ROWS = 5_000' "$csv" || { echo "ERROR: rows cap"; exit 1; }
-          sed -i 's/private const val MAX_SNIPPETS = 500/private const val MAX_SNIPPETS = 5_000/' "$csv" "$file"
-          sed -i 's/private const val MAX_ROWS = 5_000/private const val MAX_ROWS = 50_000/' "$csv"
+          sed -i 's/private const val MAX_SNIPPETS = 500/private const val MAX_SNIPPETS = 100_000/' "$csv" "$file"
+          sed -i 's/private const val MAX_ROWS = 5_000/private const val MAX_ROWS = 500_000/' "$csv"
           grep -n 'MAX_SNIPPETS =\|MAX_ROWS =' "$csv" "$file"
       - name: Make snippet store save in a stream (big lists)
         run: |
@@ -156,6 +156,100 @@ jobs:
           done
           if [ "$found" = "0" ]; then echo "ERROR: no manifest with application tag"; exit 1; fi
           grep -rn 'largeHeap' --include=AndroidManifest.xml . | grep -v '/build/' || { echo "ERROR: largeHeap not set"; exit 1; }
+      - name: File loose imports into folders
+        run: |
+          python3 - <<'PY'
+          import glob, sys
+
+          def one(name):
+              paths = [p for p in glob.glob('**/' + name, recursive=True) if '/src/main/' in p]
+              if len(paths) != 1:
+                  sys.exit('ERROR: %s found %d times' % (name, len(paths)))
+              return paths[0]
+
+          def swap(s, old, new, what):
+              n = s.count(old)
+              if n != 1:
+                  sys.exit('ERROR: %s found %d times' % (what, n))
+              return s.replace(old, new)
+
+          # ---- SnippetFile.kt: helper + use it in decode ----
+          fp = one('SnippetFile.kt')
+          s = open(fp, encoding='utf-8').read()
+          if 'foldLoose' in s:
+              sys.exit('ERROR: foldLoose already present')
+
+          s = swap(s,
+              '        return ImportedSnippets(\n            snippets = kept,\n',
+              '        val wmFiled = foldLoose(kept, folders)\n'
+              '        return ImportedSnippets(\n            snippets = wmFiled.first,\n',
+              'decode return')
+
+          s = swap(s,
+              '            folders = folders.filter { folder -> kept.any { it.folderId == folder.id } },',
+              '            folders = wmFiled.second.filter { folder -> wmFiled.first.any { it.folderId == folder.id } },',
+              'decode folders line')
+
+          helper = '''    /** A file with at least this many snippets in no folder gets them filed. */
+          private const val WM_LOOSE_MIN = 50
+
+          /** Snippets per auto-made folder. */
+          private const val WM_FOLDER_CHUNK = 5_000
+
+          /**
+           * Files snippets that sit in no folder into new folders of
+           * [WM_FOLDER_CHUNK], named Import_01, Import_02 and so on. A handful of
+           * loose snippets (fewer than [WM_LOOSE_MIN]) is left alone.
+           * Folder ids only mean something inside the file; the store reassigns them.
+           */
+          internal fun foldLoose(
+              snippets: List<Snippet>,
+              folders: List<SnippetFolder>,
+          ): Pair<List<Snippet>, List<SnippetFolder>> {
+              if (snippets.count { it.folderId == 0L } < WM_LOOSE_MIN) return snippets to folders
+              var nextId = (folders.maxOfOrNull { it.id } ?: 0L) + 1L
+              val outFolders = ArrayList<SnippetFolder>(folders)
+              val newIds = ArrayList<Long>()
+              var seen = 0
+              val result = snippets.map { snippet ->
+                  if (snippet.folderId != 0L) {
+                      snippet
+                  } else {
+                      val slot = seen / WM_FOLDER_CHUNK
+                      seen++
+                      if (slot >= newIds.size) {
+                          if (folders.size + newIds.size >= MAX_FOLDERS) return@map snippet
+                          val id = nextId++
+                          outFolders += SnippetFolder(
+                              id = id,
+                              name = "Import_" + (slot + 1).toString().padStart(2, '0'),
+                          )
+                          newIds += id
+                      }
+                      snippet.copy(folderId = newIds[slot])
+                  }
+              }
+              return result to outFolders
+          }
+
+          '''
+          anchor = "    /**\n     * The snippet's further expansions, shortened and capped like its text."
+          s = swap(s, anchor, helper + anchor, 'helper anchor')
+          open(fp, 'w', encoding='utf-8').write(s)
+          print('OK: SnippetFile.kt patched')
+
+          # ---- SnippetCsv.kt: use it in convert ----
+          cp = one('SnippetCsv.kt')
+          c = open(cp, encoding='utf-8').read()
+          c = swap(c,
+              '        return Read(\n            snippets = snippets,\n            folders = folders.values.toList(),\n',
+              '        val wmFiled = SnippetFile.foldLoose(snippets, folders.values.toList())\n'
+              '        return Read(\n            snippets = wmFiled.first,\n            folders = wmFiled.second,\n',
+              'csv return')
+          open(cp, 'w', encoding='utf-8').write(c)
+          print('OK: SnippetCsv.kt patched')
+          PY
+          git diff --stat
       - name: Add snippet search box
         run: |
           python3 - <<'PY'
@@ -306,14 +400,6 @@ jobs:
               f.write(src[:start] + body + src[end:])
           print('OK: pages and sort added to', path)
           PY
-      - name: Dump import code (diagnostic)
-        run: |
-          for f in $(find . -name SnippetFile.kt -path '*main*') $(find . -name SnippetCsv.kt -path '*main*'); do
-            echo "=================== $f"
-            cat "$f"
-          done
-          echo "=================== who calls the import"
-          grep -rnE 'SnippetFile\.|SnippetCsv\.|importSnippets|folderId *=' --include=*.kt . | grep -v '/build/' | grep -i 'snippet' | head -80
       - name: Assemble
         run: ./gradlew assembleIntlDebug --stacktrace
 
