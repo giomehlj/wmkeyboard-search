@@ -259,7 +259,7 @@ jobs:
               sys.exit('ERROR: SnippetScreens.kt found %d times' % len(paths))
           path = paths[0]
           src = open(path, encoding='utf-8').read()
-          for name in ('wmSearch', 'wmQuery', 'wmHits'):
+          for name in ('wmSearch', 'wmQuery', 'wmHits', 'wmKeys', 'wmNeedle', 'wmNorm'):
               if name in src:
                   sys.exit('ERROR: name already used: ' + name)
           pat = re.compile(r'^([ \t]*)// The pencil is the one way into every destructive or fiddly thing a list[ \t]*$', re.M)
@@ -276,22 +276,34 @@ jobs:
           )
           val wmQuery = wmSearch.trim()
           if (wmQuery.length >= 2) {
-              val wmHits = remember(snippets, wmQuery) {
-                  val wmNorm = { t: String ->
-                      t.lowercase()
-                          .replace('ي', 'ی')
-                          .replace('ك', 'ک')
-                          .map { c -> if (c.isLetterOrDigit()) c else ' ' }
-                          .joinToString("")
-                          .replace(Regex(" +"), " ")
-                          .trim()
+              val wmSpaces = remember { Regex(" +") }
+              val wmNorm = { t: String ->
+                  t.lowercase()
+                      .replace('ي', 'ی')
+                      .replace('ك', 'ک')
+                      .replace("\\u200c", "")
+                      .map { c -> if (c.isLetterOrDigit()) c else ' ' }
+                      .joinToString("")
+                      .replace(wmSpaces, " ")
+                      .trim()
+              }
+              val wmKeys by androidx.compose.runtime.produceState(emptyList<String>(), snippets) {
+                  value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                      snippets.map { " " + wmNorm(it.label.ifBlank { it.text }) }
                   }
-                  val wmNeedle = " " + wmNorm(wmQuery)
-                  val wmStarts = { f: String -> (" " + wmNorm(f)).contains(wmNeedle) }
-                  val wmHitCollator = java.text.Collator.getInstance(java.util.Locale("fa"))
-                  snippets.filter { s ->
-                      wmStarts(s.label.ifBlank { s.text })
-                  }.sortedWith(compareBy(wmHitCollator) { it.label.ifBlank { it.text } })
+              }
+              val wmNeedle = " " + wmNorm(wmQuery)
+              val wmHits = remember(wmKeys, wmNeedle) {
+                  if (wmKeys.size != snippets.size) {
+                      emptyList()
+                  } else {
+                      wmKeys.indices.asSequence()
+                          .filter { wmKeys[it].contains(wmNeedle) }
+                          .take(300)
+                          .map { snippets[it] }
+                          .sortedBy { it.label.ifBlank { it.text } }
+                          .toList()
+                  }
               }
               SnippetGroup(
                   title = "نتایج جستجو (${wmHits.size})",
@@ -347,14 +359,13 @@ jobs:
           trailing = body[len(stripped):]
           defs = '''var wmAlpha by rememberSaveable(title) { mutableStateOf(false) }
           val wmCollator = java.text.Collator.getInstance(java.util.Locale("fa"))
-          val wmSorted = remember(snippets) {
-              snippets.sortedWith(compareBy(wmCollator) { it.label.ifBlank { it.text } })
+          val wmList = remember(snippets, wmAlpha) {
+              if (wmAlpha) snippets.sortedWith(compareBy(wmCollator) { it.label.ifBlank { it.text } }) else snippets
           }
-          val wmList = if (wmAlpha) wmSorted else snippets
           var wmPage by rememberSaveable(title) { mutableStateOf(0) }
-          val wmPages = maxOf(1, (wmList.size + 499) / 500)
+          val wmPages = maxOf(1, (wmList.size + 199) / 200)
           val wmPageSafe = wmPage.coerceIn(0, wmPages - 1)
-          val wmShown = wmList.drop(wmPageSafe * 500).take(500)
+          val wmShown = wmList.drop(wmPageSafe * 200).take(200)
           val wmSortRow: @Composable () -> Unit = {
               if (snippets.size > 1) {
                   androidx.compose.material3.TextButton(
@@ -364,7 +375,7 @@ jobs:
               }
           }
           val wmPager: @Composable () -> Unit = {
-              if (snippets.size > 500) {
+              if (snippets.size > 200) {
                   androidx.compose.foundation.layout.Row(
                       modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                       horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
