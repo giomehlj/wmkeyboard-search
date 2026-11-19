@@ -1,0 +1,30 @@
+name: WM Find Instant 2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  find:
+    name: Find expansion setting code
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: wasi-master/wmkeyboard
+          ref: v0.6.7
+
+      - name: Show code
+        run: |
+          set +e
+          echo "=== 1: setting text in strings ==="
+          grep -rniE 'last (letter|character)|no space (is )?needed|escape character' --include=strings*.xml app/src/main/res/values | cut -c1-400 | head -n 15
+          echo
+          echo "=== 2: snippet files ==="
+          find . -iname '*Snippet*' -path '*src/main*' -not -path '*/build/*' | head -n 40
+          echo
+          echo "=== 3: Snippet class ==="
+          grep -rnE '(data )?class Snippet\(' --include=*.kt . | grep -v '/build/' | head -n 5
+          echo
+          echo "=== 4: expansion words in snippet code ==="
+          grep -rniE 'immediate|eager|noSpace|withoutSpace|onLastChar|expandOn|autoExpand|expandAs' --include=*.kt $(find . -iname '*Snippet*.kt' -path '*src/main*' -not -path '*/build/*') | cut -c1-300 | head -n 50
