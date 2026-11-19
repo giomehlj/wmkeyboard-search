@@ -306,6 +306,14 @@ jobs:
               f.write(src[:start] + body + src[end:])
           print('OK: pages and sort added to', path)
           PY
+      - name: Dump import code (diagnostic)
+        run: |
+          for f in $(find . -name SnippetFile.kt -path '*main*') $(find . -name SnippetCsv.kt -path '*main*'); do
+            echo "=================== $f"
+            cat "$f"
+          done
+          echo "=================== who calls the import"
+          grep -rnE 'SnippetFile\.|SnippetCsv\.|importSnippets|folderId *=' --include=*.kt . | grep -v '/build/' | grep -i 'snippet' | head -80
       - name: Assemble
         run: ./gradlew assembleIntlDebug --stacktrace
 
