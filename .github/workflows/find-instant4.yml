@@ -1,0 +1,32 @@
+name: WM Find Instant 4
+
+on:
+  workflow_dispatch:
+
+jobs:
+  find:
+    name: Show store and screen code
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: wasi-master/wmkeyboard
+          ref: v0.6.7
+
+      - name: Show code
+        run: |
+          set +e
+          d=core/content/src/main/java/com/wasimaster/wmkeyboard/core/snippets
+          a=app/src/main/java/com/wasimaster/wmkeyboard/app/SnippetScreens.kt
+          echo "=== 1: store update, editFolder, replaceAll ==="
+          sed -n '540,600p' $d/SnippetStore.kt
+          echo
+          echo "=== 2: folder screen apply ==="
+          sed -n '962,992p' $a
+          echo
+          echo "=== 3: main screen start ==="
+          sed -n '154,215p' $a
+          echo
+          echo "=== 4: add fab lines ==="
+          grep -n 'RegisterAddFab' $a
