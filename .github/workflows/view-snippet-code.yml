@@ -1,0 +1,45 @@
+name: view-snippet-code
+on: workflow_dispatch
+
+jobs:
+  view:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout our repo
+        uses: actions/checkout@v4
+        with:
+          path: self
+
+      - name: Clone official source
+        run: |
+          git clone https://github.com/wasi-master/wmkeyboard src
+          cd src
+          git checkout v0.6.7 || git checkout 0.6.7 || (git tag | tail -5; exit 1)
+
+      - name: Show our workflow files
+        run: |
+          ls -la self/.github/workflows
+          echo "##### wmEditAll in our build file"
+          grep -n "wmEditAll\|immediate" self/.github/workflows/wm-search-build.yml | head -40
+          echo "##### context around wmEditAll"
+          L=$(grep -n "wmEditAll" self/.github/workflows/wm-search-build.yml | head -1 | cut -d: -f1)
+          if [ -n "$L" ]; then sed -n "$((L-20)),$((L+70))p" self/.github/workflows/wm-search-build.yml; fi
+
+      - name: Show official code
+        working-directory: src
+        run: |
+          echo "##### Snippet class"
+          F=$(grep -rl "class Snippet\b" --include=*.kt . | head -1)
+          echo "FILE: $F"
+          L=$(grep -n "class Snippet\b" "$F" | head -1 | cut -d: -f1)
+          sed -n "${L},$((L+40))p" "$F"
+          echo
+          echo "##### SnippetBulkEdit"
+          G=$(grep -rl "class SnippetBulkEdit" --include=*.kt . | head -1)
+          echo "FILE: $G"
+          M=$(grep -n "class SnippetBulkEdit" "$G" | head -1 | cut -d: -f1)
+          sed -n "${M},$((M+60))p" "$G"
+          echo
+          echo "##### assets folder"
+          find . -path "*src/main/assets*" -maxdepth 6 | head -10
+          ls app/src/main 2>/dev/null || true
