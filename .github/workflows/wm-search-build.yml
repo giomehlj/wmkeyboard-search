@@ -1,0 +1,238 @@
+name: WM Search Build
+
+on:
+  workflow_dispatch:
+
+env:
+  WMKB_ENABLE_PLAY_STORE: "false"
+  WMKB_ENABLE_GMS: "false"
+  GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g -Dorg.gradle.daemon=false
+
+jobs:
+  build:
+    name: WM Search assemble intl debug
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: wasi-master/wmkeyboard
+          ref: v0.6.7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Apply keypad patch
+        run: |
+          python3 - <<'PY'
+          import re
+          p = "feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt"
+          s = open(p, encoding="utf-8").read()
+          pat1 = re.compile(
+              r"val context = snippetContext\(currentInputConnection, withSelection = false\)"
+              r"(\s*\n\s*val chips = snippetStore\.items\(\)\.asSequence\(\)"
+              r"\s*\n\s*\.filter \{ it\.trigger != null \|\| it\.triggerPattern\.isNullOrBlank\(\) \})"
+          )
+          if len(pat1.findall(s)) != 1:
+              raise SystemExit("ERROR: keypadSnippetOffer block not found exactly once")
+          s = pat1.sub(
+              lambda m: "val context by lazy { snippetContext(currentInputConnection, withSelection = false) }"
+              + m.group(1) + "\n            .filter { couldFitKeypad(it.text) }",
+              s,
+          )
+          pat2 = re.compile(
+              r"([ \t]*)/\*\*\s*\n\s*\* The snippets a number, phone, date or time field can take"
+          )
+          if len(pat2.findall(s)) != 1:
+              raise SystemExit("ERROR: KDoc anchor not found exactly once")
+          def add_fn(m):
+              i = m.group(1)
+              fn = (
+                  i + "/** False for text with a letter and no brace: it can never fit a keypad. */\n"
+                  + i + "private fun couldFitKeypad(text: String): Boolean {\n"
+                  + i + "    if (text.indexOf('{') >= 0) return true\n"
+                  + i + "    for (ch in text) if (ch.isLetter()) return false\n"
+                  + i + "    return true\n"
+                  + i + "}\n\n"
+              )
+              return fn + m.group(0)
+          s = pat2.sub(add_fn, s)
+          open(p, "w", encoding="utf-8").write(s)
+          print("patch applied")
+          PY
+          git diff --stat
+      - name: Raise import caps
+        run: |
+          csv=$(find . -name SnippetCsv.kt -path '*main*' | head -n1)
+          file=$(find . -name SnippetFile.kt -path '*main*' | head -n1)
+          grep -q 'private const val MAX_SNIPPETS = 500' "$csv" || { echo "ERROR: csv cap"; exit 1; }
+          grep -q 'private const val MAX_SNIPPETS = 500' "$file" || { echo "ERROR: file cap"; exit 1; }
+          grep -q 'private const val MAX_ROWS = 5_000' "$csv" || { echo "ERROR: rows cap"; exit 1; }
+          sed -i 's/private const val MAX_SNIPPETS = 500/private const val MAX_SNIPPETS = 5_000/' "$csv" "$file"
+          sed -i 's/private const val MAX_ROWS = 5_000/private const val MAX_ROWS = 50_000/' "$csv"
+          grep -n 'MAX_SNIPPETS =\|MAX_ROWS =' "$csv" "$file"
+      - name: Add snippet search box
+        run: |
+          python3 - <<'PY'
+          import glob, re, sys
+          paths = [p for p in glob.glob('**/SnippetScreens.kt', recursive=True) if '/src/main/' in p]
+          if len(paths) != 1:
+              sys.exit('ERROR: SnippetScreens.kt found %d times' % len(paths))
+          path = paths[0]
+          src = open(path, encoding='utf-8').read()
+          for name in ('wmSearch', 'wmQuery', 'wmHits'):
+              if name in src:
+                  sys.exit('ERROR: name already used: ' + name)
+          pat = re.compile(r'^([ \t]*)// The pencil is the one way into every destructive or fiddly thing a list[ \t]*$', re.M)
+          found = pat.findall(src)
+          if len(found) != 1:
+              sys.exit('ERROR: anchor found %d times' % len(found))
+          block = '''var wmSearch by rememberSaveable { mutableStateOf("") }
+          OutlinedTextField(
+              value = wmSearch,
+              onValueChange = { wmSearch = it },
+              singleLine = true,
+              label = { Text("جستجو") },
+              modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+          )
+          val wmQuery = wmSearch.trim()
+          if (wmQuery.length >= 2) {
+              val wmHits = remember(snippets, wmQuery) {
+                  val wmNorm = { t: String ->
+                      t.lowercase()
+                          .replace('ي', 'ی')
+                          .replace('ك', 'ک')
+                          .map { c -> if (c.isLetterOrDigit()) c else ' ' }
+                          .joinToString("")
+                          .replace(Regex(" +"), " ")
+                          .trim()
+                  }
+                  val wmNeedle = " " + wmNorm(wmQuery)
+                  val wmStarts = { f: String -> (" " + wmNorm(f)).contains(wmNeedle) }
+                  val wmHitCollator = java.text.Collator.getInstance(java.util.Locale("fa"))
+                  snippets.filter { s ->
+                      wmStarts(s.label.ifBlank { s.text })
+                  }.sortedWith(compareBy(wmHitCollator) { it.label.ifBlank { it.text } })
+              }
+              SnippetGroup(
+                  title = "نتایج جستجو (${wmHits.size})",
+                  snippets = wmHits.take(50),
+                  empty = "چیزی پیدا نشد",
+                  onOpen = { snippet -> onNavigate("expander/edit/${snippet.id}") },
+                  onDelete = ::deleteWithUndo,
+                  onReorder = { },
+              )
+          }
+          Spacer(Modifier.height(12.dp))
+          '''
+          ind = found[0]
+          indented = ''.join((ind + l if l.strip() else l) for l in block.splitlines(True))
+          new = pat.sub(lambda m: indented + m.group(0), src, count=1)
+          with open(path, 'w', encoding='utf-8') as f:
+              f.write(new)
+          print('OK: search box added to', path)
+          PY
+      - name: Add snippet pages and alphabetical sort
+        run: |
+          python3 - <<'PY'
+          import glob, re, sys
+          paths = [p for p in glob.glob('**/SnippetScreens.kt', recursive=True) if '/src/main/' in p]
+          if len(paths) != 1:
+              sys.exit('ERROR: SnippetScreens.kt found %d times' % len(paths))
+          path = paths[0]
+          src = open(path, encoding='utf-8').read()
+          for name in ('wmPage', 'wmPages', 'wmPageSafe', 'wmShown', 'wmPager', 'wmAlpha', 'wmCollator', 'wmSorted', 'wmList', 'wmSortRow'):
+              if name in src:
+                  sys.exit('ERROR: name already used: ' + name)
+          sig = 'private fun SnippetGroup('
+          if src.count(sig) != 1:
+              sys.exit('ERROR: SnippetGroup definition not found exactly once')
+          start = src.find(sig)
+          marker = '/** One snippet in the Text Expander list'
+          if src.count(marker) != 1:
+              sys.exit('ERROR: end marker not found exactly once')
+          end = src.find(marker, start)
+          if end < 0:
+              sys.exit('ERROR: end marker is before SnippetGroup')
+          body = src[start:end]
+          can_pat = r'^([ \t]*)val canEdit = snippets\.size > 1[ \t]*$'
+          for_pat = r'^([ \t]*)for \(snippet in snippets\) \{[ \t]*$'
+          for pat, what in ((can_pat, 'canEdit line'), (for_pat, 'for loop')):
+              n = len(re.findall(pat, body, flags=re.M))
+              if n != 1:
+                  sys.exit('ERROR: %s found %d times' % (what, n))
+          tail = '\n    }\n}'
+          stripped = body.rstrip()
+          if not stripped.endswith(tail):
+              sys.exit('ERROR: end of SnippetGroup is not as expected')
+          trailing = body[len(stripped):]
+          defs = '''var wmAlpha by rememberSaveable(title) { mutableStateOf(false) }
+          val wmCollator = java.text.Collator.getInstance(java.util.Locale("fa"))
+          val wmSorted = remember(snippets) {
+              snippets.sortedWith(compareBy(wmCollator) { it.label.ifBlank { it.text } })
+          }
+          val wmList = if (wmAlpha) wmSorted else snippets
+          var wmPage by rememberSaveable(title) { mutableStateOf(0) }
+          val wmPages = maxOf(1, (wmList.size + 499) / 500)
+          val wmPageSafe = wmPage.coerceIn(0, wmPages - 1)
+          val wmShown = wmList.drop(wmPageSafe * 500).take(500)
+          val wmSortRow: @Composable () -> Unit = {
+              if (snippets.size > 1) {
+                  androidx.compose.material3.TextButton(
+                      onClick = { wmAlpha = !wmAlpha },
+                      modifier = Modifier.padding(horizontal = 8.dp),
+                  ) { Text(if (wmAlpha) "ترتیب الفبایی: روشن" else "ترتیب الفبایی: خاموش") }
+              }
+          }
+          val wmPager: @Composable () -> Unit = {
+              if (snippets.size > 500) {
+                  androidx.compose.foundation.layout.Row(
+                      modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                      horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+                      verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                  ) {
+                      androidx.compose.material3.TextButton(
+                          onClick = { wmPage = wmPageSafe - 1 },
+                          enabled = wmPageSafe > 0,
+                      ) { Text("قبلی") }
+                      Text("صفحه ${wmPageSafe + 1} از $wmPages")
+                      androidx.compose.material3.TextButton(
+                          onClick = { wmPage = wmPageSafe + 1 },
+                          enabled = wmPageSafe < wmPages - 1,
+                      ) { Text("بعدی") }
+                  }
+              }
+          }
+          '''
+          m = re.search(can_pat, body, flags=re.M)
+          ind = m.group(1)
+          indented = ''.join((ind + l if l.strip() else l) for l in defs.splitlines(True))
+          body = (body[:m.start()] + indented + ind + 'val canEdit = !wmAlpha && snippets.size in 2..500'
+                  + body[m.end():])
+          body = re.sub(
+              for_pat,
+              lambda mm: mm.group(1) + 'item { wmSortRow() }\n' + mm.group(1) + 'item { wmPager() }\n' + mm.group(1) + 'for (snippet in wmShown) {',
+              body, count=1, flags=re.M)
+          stripped = body.rstrip()
+          if not stripped.endswith(tail):
+              sys.exit('ERROR: end of SnippetGroup changed unexpectedly')
+          body = stripped[:-len(tail)] + '\n        item { wmPager() }' + tail + trailing
+          with open(path, 'w', encoding='utf-8') as f:
+              f.write(src[:start] + body + src[end:])
+          print('OK: pages and sort added to', path)
+          PY
+      - name: Assemble
+        run: ./gradlew assembleIntlDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: apk-wm-search-debug
+          path: app/build/outputs/apk/intl/debug/*.apk
+          retention-days: 7
