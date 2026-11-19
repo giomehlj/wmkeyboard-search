@@ -497,6 +497,146 @@ jobs:
           print('OK: switch added to', ap)
           PY
           git diff --stat
+          - uses: actions/checkout@v7
+           with:
+          path: wm-words
+      - name: Make instant switch skip real-word triggers
+        run: |
+          python3 - <<'PY'
+          import glob, os, re, shutil, sys
+          ws = os.environ['GITHUB_WORKSPACE']
+          def one(name, must):
+              paths = [p for p in glob.glob(ws + '/**/' + name, recursive=True) if '/src/main/' in p and must in p]
+              if len(paths) != 1:
+                  sys.exit('ERROR: %s found %d times' % (name, len(paths)))
+              return paths[0]
+          def swap(s, pattern, new, what):
+              out, n = re.subn(pattern, lambda m: new, s)
+              if n != 1:
+                  sys.exit('ERROR: %s found %d times' % (what, n))
+              return out
+          words = ws + '/wm-words/.github/workflows/real-words.txt'
+          if not os.path.exists(words):
+              sys.exit('ERROR: real-words.txt not found')
+
+          # ---- SnippetStore.kt: wmEditAll takes an optional filter ----
+          sp = one('SnippetStore.kt', '/core/content/')
+          root = sp.split('/core/content/')[0]
+          s = open(sp, encoding='utf-8').read()
+          if 'accept: (Snippet)' in s:
+              sys.exit('ERROR: filter already present')
+          s = swap(s, r'fun wmEditAll\(edit: SnippetBulkEdit\): Int \{', 'fun wmEditAll(edit: SnippetBulkEdit, accept: (Snippet) -> Boolean = { true }): Int {', 'wmEditAll signature')
+          i = s.index('fun wmEditAll(')
+          j = s.index('val next = edit.applyTo(snippet)', i)
+          s = s[:j] + 'if (!accept(snippet)) continue\n            ' + s[j:]
+          open(sp, 'w', encoding='utf-8').write(s)
+
+          # ---- new Kotlin file with the rule ----
+          kt = os.path.join(os.path.dirname(sp), 'WmRealWords.kt')
+          if os.path.exists(kt):
+              sys.exit('ERROR: WmRealWords.kt already present')
+          code = r'''package com.wasimaster.wmkeyboard.core.snippets
+
+          import java.util.TreeSet
+
+          /** Real Persian words; a trigger that is not one (nor the start of one) is safe to expand at once. */
+          object WmRealWords {
+              @Volatile
+              private var words: TreeSet<String>? = null
+
+              fun isLoaded(): Boolean = words != null
+
+              fun load(lines: Sequence<String>) {
+                  val set = TreeSet<String>()
+                  for (line in lines) {
+                      val w = norm(line)
+                      if (w.isNotEmpty()) set.add(w)
+                  }
+                  if (set.size > 1000) words = set
+              }
+
+              private fun norm(raw: String): String {
+                  val sb = StringBuilder(raw.length)
+                  for (ch in raw.trim()) {
+                      when (ch) {
+                          '\u200C', '\u200D', '\u0640' -> {}
+                          '\u064A' -> sb.append('\u06CC')
+                          '\u0643' -> sb.append('\u06A9')
+                          else -> {
+                              if (ch !in '\u064B'..'\u0652') sb.append(ch)
+                          }
+                      }
+                  }
+                  return sb.toString()
+              }
+
+              private fun isPersianLetter(c: Char): Boolean =
+                  c in '\u0621'..'\u064A' || c == '\u067E' || c == '\u0686' ||
+                      c == '\u0698' || c == '\u06AF' || c == '\u06A9' || c == '\u06CC'
+
+              fun isNonsense(raw: String?): Boolean {
+                  val set = words ?: return false
+                  if (raw == null) return false
+                  val t = norm(raw)
+                  if (t.length < 3) return false
+                  for (c in t) if (!isPersianLetter(c)) return false
+                  val near = set.ceiling(t)
+                  return near == null || !near.startsWith(t)
+              }
+
+              fun canBeImmediate(s: Snippet): Boolean {
+                  if (s.confirm || !s.triggerPattern.isNullOrBlank()) return false
+                  if (!isNonsense(s.trigger)) return false
+                  for (a in s.aliases) if (!isNonsense(a)) return false
+                  return true
+              }
+          }
+          '''
+          code = '\n'.join(l[10:] if l.startswith(' ' * 10) else l for l in code.split('\n'))
+          open(kt, 'w', encoding='utf-8').write(code)
+
+          # ---- SnippetScreens.kt: the switch ----
+          ap = one('SnippetScreens.kt', '/app/src/main/')
+          a = open(ap, encoding='utf-8').read()
+          W = 'com.wasimaster.wmkeyboard.core.snippets.WmRealWords'
+          setup = r'''val wmCtx = androidx.compose.ui.platform.LocalContext.current
+                  val wmWordsState = remember { mutableStateOf(WMW.isLoaded()) }
+                  LaunchedEffect(Unit) {
+                      if (!wmWordsState.value) {
+                          try {
+                              kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                  wmCtx.assets.open("real-words.txt").bufferedReader().useLines { WMW.load(it) }
+                              }
+                              wmWordsState.value = WMW.isLoaded()
+                          } catch (e: Exception) {
+                          }
+                      }
+                  }
+                  val wmAllImmediate = remember(snippets, wmWordsState.value) {'''.replace('WMW', W)
+          a = swap(a, r'val wmAllImmediate = remember\(snippets\) \{', setup, 'remember anchor')
+          cond = 'wmWordsState.value && snippets.isNotEmpty() && snippets.all {\n                it.immediate || !' + W + '.canBeImmediate(it)'
+          a = swap(a, r'snippets\.isNotEmpty\(\)\s*&&\s*snippets\.all\s*\{\s*it\.immediate\s*\|\|\s*it\.confirm\s*\|\|\s*!it\.triggerPattern\.isNullOrBlank\(\)\s*\|\|\s*it\.trigger\.isNullOrBlank\(\)', cond, 'all-immediate check')
+          call = r'''mutate {
+                              val wmN = it.wmEditAll(SnippetBulkEdit(immediate = wmOn)) { s ->
+                                  !wmOn || WMW.canBeImmediate(s)
+                              }
+                              android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                  android.widget.Toast.makeText(
+                                      wmCtx,
+                                      if (wmOn) "فوری شد برای " + wmN + " اسنیپت" else "فوری خاموش شد برای " + wmN + " اسنیپت",
+                                      android.widget.Toast.LENGTH_LONG,
+                                  ).show()
+                              }
+                          }'''.replace('WMW', W)
+          a = swap(a, r'mutate\s*\{\s*it\.wmEditAll\(SnippetBulkEdit\(immediate = wmOn\)\)\s*\}', call, 'mutate call')
+          open(ap, 'w', encoding='utf-8').write(a)
+
+          # ---- the words file goes inside the app ----
+          dest = root + '/app/src/main/assets'
+          os.makedirs(dest, exist_ok=True)
+          shutil.copy(words, dest + '/real-words.txt')
+          print('OK: filter added; root =', root)
+          PY
       - name: Assemble
         run: ./gradlew assembleIntlDebug --stacktrace
 
