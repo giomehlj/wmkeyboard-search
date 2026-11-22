@@ -1,0 +1,40 @@
+name: View edit screen code
+
+on:
+  workflow_dispatch:
+
+jobs:
+  view:
+    name: Find the snippet edit screen
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: wasi-master/wmkeyboard
+          ref: v0.6.7
+
+      - name: Find files that draw trigger chips
+        run: |
+          {
+            echo '## Files with chips and triggers'
+            echo '```'
+            grep -rlE "InputChip|FlowRow|AssistChip|FilterChip" --include=*.kt . \
+              | grep -v '/build/' \
+              | xargs grep -liE "alias|trigger" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show the important lines
+        run: |
+          files=$(grep -rlE "InputChip|FlowRow|AssistChip|FilterChip" --include=*.kt . \
+            | grep -v '/build/' \
+            | xargs grep -liE "alias|trigger" || true)
+          for f in $files; do
+            {
+              echo "## $f"
+              echo '```'
+              grep -nE "InputChip|FlowRow|AssistChip|FilterChip|alias|Alias|onRemove|onClick|LazyColumn|LazyRow|items\(" "$f" | head -70
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
