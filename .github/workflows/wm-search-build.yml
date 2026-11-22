@@ -637,6 +637,70 @@ jobs:
           shutil.copy(words, dest + '/real-words.txt')
           print('OK: filter added; root =', root)
           PY
+      - name: Show trigger chips 50 per page
+        run: |
+          python3 - <<'PY'
+          import glob, re, sys
+          paths = [p for p in glob.glob('**/SnippetScreens.kt', recursive=True) if '/src/main/' in p]
+          if len(paths) != 1:
+              sys.exit('ERROR: SnippetScreens.kt found %d times' % len(paths))
+          path = paths[0]
+          src = open(path, encoding='utf-8').read()
+          if 'wmcShown' in src:
+              sys.exit('ERROR: chips already patched')
+          sig = 'private fun ChipInputField('
+          if src.count(sig) != 1:
+              sys.exit('ERROR: ChipInputField found %d times' % src.count(sig))
+          start = src.find(sig)
+          end = src.find('\n}\n', start)
+          if end < 0:
+              sys.exit('ERROR: end of ChipInputField not found')
+          body = src[start:end]
+
+          def once(pat, what):
+              n = len(re.findall(pat, body, flags=re.M))
+              if n != 1:
+                  sys.exit('ERROR: %s found %d times' % (what, n))
+
+          if_pat = r'^([ \t]*)if \(chips\.isNotEmpty\(\)\) \{[ \t]*$'
+          for_pat = r'for \(chip in chips\) \{'
+          sp_pat = r'^([ \t]*)Spacer\(Modifier\.height\(4\.dp\)\)[ \t]*$'
+          once(if_pat, 'chips if-block')
+          once(for_pat, 'chips for loop')
+          once(sp_pat, 'spacer line')
+
+          defs = '''var wmcPage by rememberSaveable { mutableStateOf(0) }
+          val wmcPages = maxOf(1, (chips.size + 49) / 50)
+          val wmcPageSafe = wmcPage.coerceIn(0, wmcPages - 1)
+          val wmcShown = chips.drop(wmcPageSafe * 50).take(50)
+          '''
+          pager = '''if (chips.size > 50) {
+              androidx.compose.foundation.layout.Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+                  verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+              ) {
+                  androidx.compose.material3.TextButton(
+                      onClick = { wmcPage = wmcPageSafe - 1 },
+                      enabled = wmcPageSafe > 0,
+                  ) { Text("قبلی") }
+                  Text("${wmcPageSafe + 1} / $wmcPages  (${chips.size})")
+                  androidx.compose.material3.TextButton(
+                      onClick = { wmcPage = wmcPageSafe + 1 },
+                      enabled = wmcPageSafe < wmcPages - 1,
+                  ) { Text("بعدی") }
+              }
+          }
+          '''
+          def indent(block, ind):
+              return ''.join((ind + l if l.strip() else l) for l in block.splitlines(True))
+
+          body = re.sub(if_pat, lambda m: indent(defs, m.group(1)) + m.group(0), body, count=1, flags=re.M)
+          body = re.sub(for_pat, 'for (chip in wmcShown) {', body, count=1)
+          body = re.sub(sp_pat, lambda m: indent(pager, m.group(1)) + m.group(0), body, count=1, flags=re.M)
+          open(path, 'w', encoding='utf-8').write(src[:start] + body + src[end:])
+          print('OK: trigger chips are shown 50 per page in', path)
+          PY
       - name: Assemble
         run: ./gradlew assembleIntlDebug --stacktrace
 
