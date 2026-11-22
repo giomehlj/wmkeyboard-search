@@ -1,0 +1,35 @@
+name: View trigger chips code
+
+on:
+  workflow_dispatch:
+
+jobs:
+  view:
+    name: Show the trigger chips code
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: wasi-master/wmkeyboard
+          ref: v0.6.7
+
+      - name: Show the code
+        run: |
+          f=$(grep -rl "allTriggers" --include=*.kt . | grep -v '/build/' | xargs grep -l "InputChip" | head -n1)
+          echo "file: $f"
+          {
+            echo "## $f"
+            echo "### where allTriggers is used"
+            echo '```'
+            grep -n "allTriggers" "$f"
+            echo '```'
+            echo "### lines 2270 to 2380 (the chips)"
+            echo '```'
+            nl -ba "$f" | sed -n '2270,2380p'
+            echo '```'
+            echo "### lines 1835 to 1900 (the save)"
+            echo '```'
+            nl -ba "$f" | sed -n '1835,1900p'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
